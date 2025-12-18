@@ -12,14 +12,14 @@ CQUNAL 是一个面向 CQUNET 校园网的 Windows 托盘守护程序。它会�
 ## 环境与依赖
 - 操作系统：Windows 10+
 - Python：3.9 及以上
-- 依赖库：`psutil`、`requests`、`pystray`、`Pillow`
+- 依赖库：`psutil`、`requests`、`pystray`、`Pillow`、`pywin32`
 
 安装依赖：
 
 ```bash
 pip install -r requirements.txt
 # 或
-pip install psutil requests pystray pillow
+pip install psutil requests pystray pillow pywin32
 ```
 
 ## 配置说明
@@ -52,7 +52,7 @@ pip install psutil requests pystray pillow
 推荐使用 PyInstaller：
 
 ```bash
-pyinstaller --onefile --noconsole --name "CQUNAL-ABIN" --icon cqulogo.ico main.py 
+pyinstaller --onefile --noconsole --name "CQUNAL" --icon cqulogo.ico main.py 
 ```
 
 构建完成后在 `dist/CQUNAL/` 目录得到可执行文件。分发时请同时提供 `config.json`（或给用户模板示例）以及 `cqulogo.png`/`cqulogo.ico`。

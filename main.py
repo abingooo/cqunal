@@ -8,6 +8,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
+import winreg
 
 try:
     import psutil
@@ -30,13 +31,23 @@ try:
 except ImportError:
     Image = None
 
+try:
+    import win32com.client
+except ImportError:
+    win32com = None
+
 APP_ID = "CQUNAL"
 LOGIN_URL = "http://10.254.7.4:801/eportal/portal/login"
 CONNECTIVITY_CHECK_URL = "http://connectivitycheck.gstatic.com/generate_204"
-CONFIG_PATH = Path("config.json")
-PNG_ICON_PATH = Path("cqulogo.png")
-ICO_ICON_PATH = Path("cqulogo.ico")
+if getattr(sys, "frozen", False):
+    BASE_DIR = Path(sys.executable).resolve().parent
+else:
+    BASE_DIR = Path(__file__).resolve().parent
+CONFIG_PATH = BASE_DIR / "config.json"
+PNG_ICON_PATH = BASE_DIR / "cqulogo.png"
+ICO_ICON_PATH = BASE_DIR / "cqulogo.ico"
 INSTANCE_PORT = 45671
+RUN_KEY_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
@@ -75,7 +86,7 @@ def _get_startup_entry_path() -> Path:
         / "Start Menu"
         / "Programs"
         / "Startup"
-        / f"{APP_ID}.cmd"
+        / f"{APP_ID}.lnk"
     )
 
 
@@ -87,25 +98,54 @@ def _get_launch_targets() -> Tuple[Path, Path]:
     return exe_path, exe_path.parent
 
 
-def _build_startup_script() -> str:
+def _get_shortcut_meta() -> Tuple[Path, str, Path]:
     exe_path, working_dir = _get_launch_targets()
     if getattr(sys, "frozen", False):
-        launch_cmd = f'"{exe_path}"'
+        target_path = exe_path
+        arguments = ""
     else:
         interpreter = Path(sys.executable).resolve()
-        launch_cmd = f'"{interpreter}" "{exe_path}"'
-    lines = [
-        "@echo off",
-        f'cd /d "{working_dir}"',
-        f'start "" {launch_cmd}',
-        "",
-    ]
-    return "\r\n".join(lines)
+        pythonw = interpreter.with_name("pythonw.exe")
+        target_path = pythonw if pythonw.exists() else interpreter
+        arguments = f'"{exe_path}"'
+    return target_path, arguments, working_dir
+
+
+def _write_run_registry(command: Optional[str]) -> None:
+    try:
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, RUN_KEY_PATH, 0, winreg.KEY_SET_VALUE
+        )
+    except FileNotFoundError:
+        key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, RUN_KEY_PATH)
+    with key:
+        if command:
+            winreg.SetValueEx(key, APP_ID, 0, winreg.REG_SZ, command)
+        else:
+            try:
+                winreg.DeleteValue(key, APP_ID)
+            except FileNotFoundError:
+                pass
 
 
 def enable_autostart(entry_path: Path) -> None:
+    if win32com is None:
+        raise RuntimeError("需要安装 pywin32 才能创建开机自启快捷方式")
+    target_path, arguments, working_dir = _get_shortcut_meta()
+    icon_path = ensure_icon()
     entry_path.parent.mkdir(parents=True, exist_ok=True)
-    entry_path.write_text(_build_startup_script(), encoding="utf-8")
+    shell = win32com.client.Dispatch("WScript.Shell")
+    shortcut = shell.CreateShortCut(str(entry_path))
+    shortcut.Targetpath = str(target_path)
+    shortcut.WorkingDirectory = str(working_dir)
+    shortcut.Arguments = arguments
+    if icon_path:
+        shortcut.IconLocation = f"{icon_path},0"
+    shortcut.save()
+    command = f'"{target_path}"'
+    if arguments:
+        command += f" {arguments}"
+    _write_run_registry(command)
 
 
 def disable_autostart(entry_path: Path) -> None:
@@ -113,6 +153,20 @@ def disable_autostart(entry_path: Path) -> None:
         entry_path.unlink()
     except FileNotFoundError:
         pass
+    _write_run_registry(None)
+
+
+def check_autostart(entry_path: Optional[Path]) -> bool:
+    if entry_path and entry_path.exists():
+        return True
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER, RUN_KEY_PATH, 0, winreg.KEY_READ
+        ) as key:
+            winreg.QueryValueEx(key, APP_ID)
+            return True
+    except FileNotFoundError:
+        return False
 
 
 def ensure_icon() -> Optional[str]:
@@ -441,7 +495,7 @@ class TrayApp:
         except RuntimeError as exc:
             logger.warning("无法启用开机自启动切换：%s", exc)
             self.autostart_entry = None
-        self.autostart_enabled = bool(self.autostart_entry and self.autostart_entry.exists())
+        self.autostart_enabled = check_autostart(self.autostart_entry)
         self.icon_image = load_icon_image()
         autostart_item = pystray.MenuItem(
             "开机自启动",
@@ -452,7 +506,7 @@ class TrayApp:
         self.icon = pystray.Icon(
             APP_ID,
             self.icon_image,
-            "CQUNET AUTO LOGIN",
+            "CQUNAL AUTO LOGIN",
             menu=pystray.Menu(
                 pystray.MenuItem("启动守护", self.start_worker),
                 pystray.MenuItem("停止守护", self.stop_worker),
@@ -499,6 +553,7 @@ class TrayApp:
         except Exception as exc:
             self.notifier.notify_autostart("autostart_error", f"切换失败：{exc}", force=True)
         finally:
+            self.autostart_enabled = check_autostart(self.autostart_entry)
             if self.icon:
                 self.icon.update_menu()
 
